@@ -189,15 +189,22 @@ def get_sleep_duration():
     return 60
 
 
-
 # 多线程监控
 def monitor_user(username, config, nitter_instances, keywords, last_tweet_ids_lock, last_tweet_ids):
+    fail_count = 0
+    fail_threshold = 5  # 连续失败5次则触发告警
+
     with sync_playwright() as p:
         while True:
             try:
                 tweet_text, tweet_id = get_latest_tweet(p, nitter_instances, username)
 
                 if tweet_text and tweet_id:
+                    # 成功获取，清空连续失败计数
+                    if fail_count >= fail_threshold:
+                        logging.info(f"{username} 镜像恢复正常，清除失败计数。")
+                    fail_count = 0
+
                     with last_tweet_ids_lock:
                         last_id = last_tweet_ids.get(username)
 
@@ -216,12 +223,19 @@ def monitor_user(username, config, nitter_instances, keywords, last_tweet_ids_lo
                     else:
                         logging.info(f"{username} 无新推文。")
                 else:
-                    logging.info(f"{username} 获取推文失败。")
+                    fail_count += 1
+                    logging.warning(f"{username} 获取推文失败，已连续失败 {fail_count} 次。")
+
+                    if fail_count == fail_threshold:
+                        alert_msg = f"⚠️【警告】{username} 从所有 Nitter 镜像连续获取失败 {fail_threshold} 次，可能镜像全部不可用！"
+                        send_telegram_message(alert_msg, config)
+                        send_wechat_message(alert_msg, config)
 
             except Exception as e:
                 logging.error(f"用户 {username} 监控异常: {e}")
 
             time.sleep(get_sleep_duration())
+
 
 
 
@@ -266,70 +280,6 @@ def main():
     except KeyboardInterrupt:
         logging.info("程序被手动中断，正在退出...")
 
-
-'''
-
-
-
-
-def main():
-    setup_logging()
-    logging.info("程序启动，开始监控多个推特账号...")
-
-    config = load_config()
-    if not config:
-        logging.error("无法加载配置，程序退出。")
-        return
-
-    nitter_instances = [url.strip() for url in config['Scraper']['nitter_instances'].split('\n') if url.strip()]
-    keywords = [kw.strip() for kw in config['Scraper']['keywords'].split(',')]
-    usernames = [u.strip() for u in config['Scraper']['usernames'].split(',') if u.strip()]
-
-    if not nitter_instances or not keywords or not usernames:
-        logging.error("配置文件中缺少 Nitter 实例、关键词或用户列表。")
-        return
-
-    logging.info(f"关键词: {keywords}")
-    logging.info(f"推特用户: {usernames}")
-    logging.info(f"Nitter实例: {nitter_instances}")
-
-    # 每个用户一个 tweet_id
-    last_tweet_ids = {user: None for user in usernames}
-
-    with sync_playwright() as p:
-        while True:
-            try:
-                for username in usernames:
-                    tweet_text, tweet_id = get_latest_tweet(p, nitter_instances, username)
-
-                    if tweet_text and tweet_id:
-                        if tweet_id != last_tweet_ids[username]:
-                            last_tweet_ids[username] = tweet_id
-                            logging.info(f"{username} 发布了新推文: {tweet_text[:60]}...")
-
-                            if any(kw.lower() in tweet_text.lower() for kw in keywords):
-                                message = f"【{username}】发现关键词推文：\n\n{tweet_text}"
-                                send_telegram_message(message, config)
-                                send_wechat_message(message, config)
-                            else:
-                                logging.info(f"{username} 新推文未命中关键词，跳过。")
-                        else:
-                            logging.info(f"{username} 无新推文。")
-                    else:
-                        logging.info(f"{username} 获取推文失败。")
-
-                time.sleep(get_sleep_duration())
-
-            except KeyboardInterrupt:
-                logging.info("程序被手动中断。")
-                break
-            except Exception as e:
-                logging.error(f"主循环异常: {e}")
-                time.sleep(60)
-
-
-
-'''
 
 
 if __name__ == '__main__':
