@@ -11,6 +11,12 @@ import requests
 from bs4 import BeautifulSoup
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
 
+
+import threading
+import time
+import logging
+from playwright.sync_api import sync_playwright
+
 def resource_path(relative_path):
     """ 获取资源的绝对路径，无论是从脚本运行还是从打包后的exe运行 """
     try:
@@ -211,6 +217,85 @@ def get_sleep_duration():
 
 
 
+
+def monitor_user(username, config, nitter_instances, keywords, last_tweet_ids_lock, last_tweet_ids):
+    with sync_playwright() as p:
+        while True:
+            try:
+                tweet_text, tweet_id = get_latest_tweet(p, nitter_instances, username)
+
+                if tweet_text and tweet_id:
+                    with last_tweet_ids_lock:
+                        last_id = last_tweet_ids.get(username)
+
+                    if tweet_id != last_id:
+                        with last_tweet_ids_lock:
+                            last_tweet_ids[username] = tweet_id
+
+                        logging.info(f"{username} 发布了新推文: {tweet_text[:60]}...")
+
+                        if any(kw.lower() in tweet_text.lower() for kw in keywords):
+                            message = f"【{username}】发现关键词推文：\n\n{tweet_text}"
+                            send_telegram_message(message, config)
+                            send_wechat_message(message, config)
+                        else:
+                            logging.info(f"{username} 新推文未命中关键词，跳过。")
+                    else:
+                        logging.info(f"{username} 无新推文。")
+                else:
+                    logging.info(f"{username} 获取推文失败。")
+
+            except Exception as e:
+                logging.error(f"用户 {username} 监控异常: {e}")
+
+            time.sleep(get_sleep_duration())
+
+def main():
+    setup_logging()
+    logging.info("程序启动，开始多线程监控多个推特账号...")
+
+    config = load_config()
+    if not config:
+        logging.error("无法加载配置，程序退出。")
+        return
+
+    nitter_instances = [url.strip() for url in config['Scraper']['nitter_instances'].split('\n') if url.strip()]
+    keywords = [kw.strip() for kw in config['Scraper']['keywords'].split(',')]
+    usernames = [u.strip() for u in config['Scraper']['usernames'].split(',') if u.strip()]
+
+    if not nitter_instances or not keywords or not usernames:
+        logging.error("配置文件中缺少 Nitter 实例、关键词或用户列表。")
+        return
+
+    logging.info(f"关键词: {keywords}")
+    logging.info(f"推特用户: {usernames}")
+    logging.info(f"Nitter 实例: {nitter_instances}")
+
+    last_tweet_ids = {}
+    last_tweet_ids_lock = threading.Lock()
+
+    threads = []
+    for username in usernames:
+        t = threading.Thread(
+            target=monitor_user,
+            args=(username, config, nitter_instances, keywords, last_tweet_ids_lock, last_tweet_ids),
+            daemon=True
+        )
+        t.start()
+        threads.append(t)
+
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        logging.info("程序被手动中断，正在退出...")
+
+
+'''
+
+
+
+
 def main():
     setup_logging()
     logging.info("程序启动，开始监控多个推特账号...")
@@ -266,6 +351,9 @@ def main():
                 logging.error(f"主循环异常: {e}")
                 time.sleep(60)
 
+
+
+'''
 
 
 if __name__ == '__main__':
