@@ -184,40 +184,13 @@ def get_latest_tweet(p, nitter_instances, username):
 
 
 
-
 def get_sleep_duration():
-    """根据当前北京时间计算下一次检查前的休眠秒数"""
-    now_bjt = datetime.now(BJT)
-    hour = now_bjt.hour
-    minute = now_bjt.minute
-
-    # 晚上11:02到次日早上10:00，暂停
-    if (hour == 23 and minute >= 2) or hour > 23 or hour < 10:
-        pause_until = now_bjt.replace(hour=10, minute=0, second=0, microsecond=0)
-        if now_bjt.hour >= 23:
-            pause_until += timedelta(days=1)
-        
-        sleep_seconds = (pause_until - now_bjt).total_seconds()
-        logging.info(f"现在是休眠时间，将暂停直到北京时间 {pause_until.strftime('%Y-%m-%d %H:%M:%S')}")
-        return sleep_seconds
-
-    # 下午3点到晚上11点 (15:00 - 23:01)
-    if 15 <= hour < 23:
-        # 整点前后 (xx:58 - yy:02)
-        if minute >= 58 or minute <= 1:
-            logging.info("处于关键时间段，30秒后检查。")
-            return 30  # 30秒一次
-        else:
-            logging.info("处于普通高峰时段，1分钟后检查。")
-            return 60  # 1分钟一次
-    
-    # 其他时间 (早上10:00 - 下午15:00)
-    logging.info("处于普通时段，5分钟后检查。")
-    return 300  # 5分钟一次
+    """统一设置为每隔 60 秒检查一次"""
+    return 60
 
 
 
-
+# 多线程监控
 def monitor_user(username, config, nitter_instances, keywords, last_tweet_ids_lock, last_tweet_ids):
     with sync_playwright() as p:
         while True:
@@ -249,6 +222,9 @@ def monitor_user(username, config, nitter_instances, keywords, last_tweet_ids_lo
                 logging.error(f"用户 {username} 监控异常: {e}")
 
             time.sleep(get_sleep_duration())
+
+
+
 
 def main():
     setup_logging()
