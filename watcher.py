@@ -11,23 +11,16 @@ import requests
 from bs4 import BeautifulSoup
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
 
-
 import threading
-import time
-import logging
-from playwright.sync_api import sync_playwright
 
 def resource_path(relative_path):
     """ 获取资源的绝对路径，无论是从脚本运行还是从打包后的exe运行 """
     try:
-        # PyInstaller 创建一个临时文件夹，并把路径存储在 _MEIPASS 中
         base_path = sys._MEIPASS
     except Exception:
         base_path = os.path.abspath(".")
-
     return os.path.join(base_path, relative_path)
 
-# --- 全局配置 ---
 CONFIG_FILE = resource_path('config.ini')
 LOG_FILE = 'watcher.log'
 USER_AGENTS = [
@@ -37,11 +30,10 @@ USER_AGENTS = [
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:107.0) Gecko/20100101 Firefox/107.0',
     'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.1 Safari/605.1.15',
 ]
-# 设置北京时区
+
 BJT = pytz.timezone('Asia/Shanghai')
 
 def setup_logging():
-    """配置日志记录，同时输出到文件和控制台"""
     logging.basicConfig(
         level=logging.INFO,
         format='%(asctime)s - %(levelname)s - %(message)s',
@@ -52,21 +44,24 @@ def setup_logging():
     )
 
 def load_config():
-    """加载配置文件，仅保留 Telegram 和 Scraper 部分"""
     try:
         config = configparser.ConfigParser(allow_no_value=True)
-        config.optionxform = str  # 保持键大小写
+        config.optionxform = str
 
         if not os.path.exists(CONFIG_FILE):
             logging.error(f"找不到配置文件 {CONFIG_FILE}，程序将创建一个模板。")
             config['Telegram'] = {'bot_token': '', 'user_id': ''}
-            config['Scraper'] = {'keywords': '币安,Alpha,积分,用户,空投'}
+            config['Scraper'] = {
+                'keywords': '币安,Alpha,积分,用户,空投',
+                'nitter_instances': 'https://nitter.net\nhttps://nitter.1d4.us',
+                'usernames': 'TwitterUser1,TwitterUser2'
+            }
             with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
                 config.write(f)
+            return None
 
         config.read(CONFIG_FILE, encoding='utf-8')
 
-        # 检查必要配置
         if 'Telegram' not in config or 'Scraper' not in config:
             logging.error("配置文件缺少 [Telegram] 或 [Scraper] 部分。")
             return None
@@ -76,15 +71,11 @@ def load_config():
             return None
 
         return config
-
     except Exception as e:
         logging.error(f"加载配置时出错: {e}")
         return None
 
-
-# TG提醒
 def send_telegram_message(content, config):
-    """发送 Telegram 通知"""
     try:
         bot_token = config['Telegram']['bot_token']
         user_id = config['Telegram']['user_id']
@@ -92,7 +83,6 @@ def send_telegram_message(content, config):
         data = {
             "chat_id": user_id,
             "text": content
-            # 不使用 parse_mode，纯文本发送
         }
         response = requests.post(url, data=data)
         if response.status_code == 200:
@@ -102,10 +92,7 @@ def send_telegram_message(content, config):
     except Exception as e:
         logging.error(f"发送 Telegram 消息时出错: {e}")
 
-
-# 微信提醒
 def send_wechat_message(content, config):
-    """通过企业微信机器人发送通知"""
     try:
         webhook = config['WeChat'].get('wechat_webhook', '').strip()
         if not webhook:
@@ -114,9 +101,7 @@ def send_wechat_message(content, config):
 
         data = {
             "msgtype": "text",
-            "text": {
-                "content": content
-            }
+            "text": {"content": content}
         }
         response = requests.post(webhook, json=data, timeout=10)
         if response.status_code == 200 and response.json().get("errcode") == 0:
@@ -129,11 +114,10 @@ def send_wechat_message(content, config):
         logging.error(f"发送企业微信消息时出错: {e}")
         return False
 
-
-
-def get_latest_tweet(p, nitter_instances, username):
+def get_latest_tweets(p, nitter_instances, username, max_count=3):
     """
-    使用 Playwright 从Nitter实例获取指定用户的最新推文。
+    使用 Playwright 从Nitter实例获取指定用户的最新推文，最多返回 max_count 条。
+    返回列表：[(tweet_text, tweet_id), ...]
     """
     os.environ["PLAYWRIGHT_BROWSERS_PATH"] = "0"
     random.shuffle(nitter_instances)
@@ -142,7 +126,7 @@ def get_latest_tweet(p, nitter_instances, username):
         try:
             browser = p.chromium.launch(headless=True)
             page = browser.new_page(user_agent=random.choice(USER_AGENTS))
-            
+
             url = f"{instance}/{username}"
             logging.info(f"正在尝试从 {url} 获取推文...")
             page.goto(url, timeout=30000)
@@ -150,24 +134,29 @@ def get_latest_tweet(p, nitter_instances, username):
 
             html_content = page.content()
             soup = BeautifulSoup(html_content, 'html.parser')
-            
-            latest_tweet_div = soup.find('div', class_='timeline-item')
-            if not latest_tweet_div:
+
+            tweet_divs = soup.find_all('div', class_='timeline-item', limit=max_count)
+            if not tweet_divs:
                 logging.warning(f"{url} 上未找到推文内容。")
                 browser.close()
                 continue
-            
-            content_div = latest_tweet_div.find('div', class_='tweet-content')
-            tweet_text = content_div.text.strip() if content_div else ""
 
-            link_tag = latest_tweet_div.find('a', class_='tweet-link')
-            tweet_id = link_tag['href'] if link_tag else ""
+            tweets = []
+            for div in tweet_divs:
+                content_div = div.find('div', class_='tweet-content')
+                tweet_text = content_div.text.strip() if content_div else ""
+
+                link_tag = div.find('a', class_='tweet-link')
+                tweet_id = link_tag['href'] if link_tag else ""
+
+                if tweet_text and tweet_id:
+                    tweets.append((tweet_text, tweet_id))
 
             browser.close()
 
-            if tweet_text and tweet_id:
-                logging.info(f"{username} 最新推文 ID: {tweet_id}")
-                return tweet_text, tweet_id
+            if tweets:
+                logging.info(f"{username} 获取到 {len(tweets)} 条推文。")
+                return tweets
             else:
                 continue
 
@@ -180,16 +169,11 @@ def get_latest_tweet(p, nitter_instances, username):
                 browser.close()
 
     logging.error(f"{username} 所有 Nitter 实例均失败。")
-    return None, None
-
-
+    return []
 
 def get_sleep_duration():
-    """统一设置为每隔 60 秒检查一次"""
     return 60
 
-
-# 多线程监控
 def monitor_user(username, config, nitter_instances, keywords, last_tweet_ids_lock, last_tweet_ids):
     fail_count = 0
     fail_threshold = 5  # 连续失败5次则触发告警
@@ -197,29 +181,35 @@ def monitor_user(username, config, nitter_instances, keywords, last_tweet_ids_lo
     with sync_playwright() as p:
         while True:
             try:
-                tweet_text, tweet_id = get_latest_tweet(p, nitter_instances, username)
+                tweets = get_latest_tweets(p, nitter_instances, username, max_count=3)
 
-                if tweet_text and tweet_id:
-                    # 成功获取，清空连续失败计数
+                if tweets:
                     if fail_count >= fail_threshold:
                         logging.info(f"{username} 镜像恢复正常，清除失败计数。")
                     fail_count = 0
 
                     with last_tweet_ids_lock:
-                        last_id = last_tweet_ids.get(username)
+                        last_ids = last_tweet_ids.get(username, set())
 
-                    if tweet_id != last_id:
+                    new_tweets = []
+                    for tweet_text, tweet_id in tweets:
+                        if tweet_id not in last_ids:
+                            new_tweets.append((tweet_text, tweet_id))
+
+                    if new_tweets:
                         with last_tweet_ids_lock:
-                            last_tweet_ids[username] = tweet_id
+                            updated_ids = set(tweet_id for _, tweet_id in tweets)
+                            last_tweet_ids[username] = updated_ids
 
-                        logging.info(f"{username} 发布了新推文: {tweet_text[:60]}...")
+                        for tweet_text, tweet_id in new_tweets:
+                            logging.info(f"{username} 发布了新推文: {tweet_text[:60]}...")
 
-                        if any(kw.lower() in tweet_text.lower() for kw in keywords):
-                            message = f"【{username}】发现关键词推文：\n\n{tweet_text}"
-                            send_telegram_message(message, config)
-                            send_wechat_message(message, config)
-                        else:
-                            logging.info(f"{username} 新推文未命中关键词，跳过。")
+                            if any(kw.lower() in tweet_text.lower() for kw in keywords):
+                                message = f"【{username}】发现关键词推文：\n\n{tweet_text}"
+                                send_telegram_message(message, config)
+                                send_wechat_message(message, config)
+                            else:
+                                logging.info(f"{username} 新推文未命中关键词，跳过。")
                     else:
                         logging.info(f"{username} 无新推文。")
                 else:
@@ -235,10 +225,6 @@ def monitor_user(username, config, nitter_instances, keywords, last_tweet_ids_lo
                 logging.error(f"用户 {username} 监控异常: {e}")
 
             time.sleep(get_sleep_duration())
-
-
-
-
 
 def main():
     setup_logging()
@@ -280,7 +266,5 @@ def main():
     except KeyboardInterrupt:
         logging.info("程序被手动中断，正在退出...")
 
-
-
 if __name__ == '__main__':
-    main() 
+    main()
