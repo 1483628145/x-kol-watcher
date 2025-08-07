@@ -172,7 +172,7 @@ def get_latest_tweets(p, nitter_instances, username, max_count=3):
     return []
 
 def get_sleep_duration():
-    return 60
+    return 300
 
 def monitor_user(username, config, nitter_instances, keywords, last_tweet_ids_lock, last_tweet_ids):
     fail_count = 0
